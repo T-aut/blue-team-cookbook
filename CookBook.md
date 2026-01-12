@@ -13,75 +13,81 @@ A quick reference for most of the commands and set-ups needed for Blue Team.
 
 ### Initial Lockdown Script
 
+To do initial lockdown on a system we have no clue about (what is compromised, is command-and-control present, persistence, etc.). Needs a system that uses apt
+
 ```bash name=initial-lockdown.sh
 #!/bin/bash
-# Quick system lockdown for attack-defense CTF
-# Mainly for systems that use `apt`
 
-echo "[*] Starting system lockdown..."
+echo "[ILS] Starting system lockdown..."
 
 # Update and patch critical services
-echo "[+] Updating system packages..."
+echo "[ILS] Updating system packages..."
 apt update && apt upgrade -y
 
-# Change default passwords
-echo "[+] Force password changes..."
-passwd root  # Set strong password
-for user in $(awk -F:  '$3 >= 1000 {print $1}' /etc/passwd); do
-    echo "Changing password for $user"
-    passwd $user
-done
-
-# 3. Disable unnecessary services
-echo "[+] Disabling unnecessary services..."
-systemctl disable avahi-daemon # apple
-systemctl disable cups
-systemctl disable bluetooth
-systemctl stop avahi-daemon cups bluetooth
+# Disable unnecessary services
+echo "[ILS] Disabling unnecessary services..."
+systemctl disable avahi-daemon 2>/dev/null # apple
+systemctl disable cups 2>/dev/null
+systemctl disable bluetooth 2>/dev/null
+systemctl stop avahi-daemon cups bluetooth 2>/dev/null
+systemctl disable telnet 2>/dev/null
+systemctl stop telnet 2>/dev/null
 # Add more services deemed unnecessary
 
 # Configure firewall
-echo "[+] Configuring firewall..."
+echo "[ILS] Configuring firewall..."
 ufw --force enable
 ufw default deny incoming
 ufw default allow outgoing
 ufw allow 22/tcp  # SSH
 ufw allow 80/tcp  # HTTP
 ufw allow 443/tcp # HTTPS
-# Add more ports here if needed
+# Add more allowed ports here if needed
 
 # Secure SSH
-echo "[+] Hardening SSH..."
+echo "[ILS] Hardening SSH..."
 sed -i 's/#PermitRootLogin yes/PermitRootLogin no/' /etc/ssh/sshd_config
-sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
 sed -i 's/#PermitEmptyPasswords no/PermitEmptyPasswords no/' /etc/ssh/sshd_config
 echo "MaxAuthTries 3" >> /etc/ssh/sshd_config
 echo "LoginGraceTime 60" >> /etc/ssh/sshd_config
 systemctl restart sshd
+# potential problem if this part is run more than twice
+# we will end up with duplicate rows
+# FIX LATER
 
-# Enable process accounting
-echo "[+] Enabling process accounting..."
+# Enable process accounting (what commmands/processes ran)
+echo "[ILS] Enabling process accounting..."
 apt install -y acct
 systemctl enable acct
 systemctl start acct
 
-# Set secure permissions
-echo "[+] Securing sensitive files..."
+# Ofcourse these files might be global read in CTF
+echo "[ILS] Securing sensitive files..."
 chmod 600 /etc/shadow
 chmod 600 /etc/gshadow
 chmod 644 /etc/passwd
 chmod 644 /etc/group
 
-# Enable audit logging
-echo "[+] Enabling auditd..."
+# Enable auditd logging (from lab2)
+echo "[ILS] Enabling auditd..."
 apt install -y auditd audispd-plugins
 systemctl enable auditd
 systemctl start auditd
 
-echo "[*] Basic lockdown complete!"
+echo "[ILS] Basic lockdown complete!"
 ```
 
-### Quick Password Reset Script
+### Password Reset (Quick)
+
+https://unix.stackexchange.com/a/197451
+
+```bash
+echo 'pi:newpassword' | chpasswd # change user pi password to newpassword
+```
+
+### Password Reset Script (WITH LOGGING)
+
+Affects all users + **root**
 
 ```bash name=reset-all-passwords.sh
 #!/bin/bash
@@ -90,22 +96,21 @@ echo "[*] Basic lockdown complete!"
 NEW_PASS="TempP@ss$(date +%s)"
 LOGFILE="/root/password_reset.log"
 
-echo "[*] Resetting all user passwords..." | tee -a $LOGFILE
-echo "[*] New temporary password: $NEW_PASS" | tee -a $LOGFILE
+echo "[PRS] Resetting all user passwords..." | tee -a $LOGFILE
+echo "[PRS] New temporary password: $NEW_PASS" | tee -a $LOGFILE
 
-# Reset all human users
+# Reset all non system users
 for user in $(awk -F: '$3 >= 1000 && $3 < 65534 {print $1}' /etc/passwd); do
-    echo "[+] Resetting password for:  $user" | tee -a $LOGFILE
+    echo "[PRS] Resetting password for:  $user" | tee -a $LOGFILE
     echo "$user:$NEW_PASS" | chpasswd
     passwd -e $user  # Force change on next login
 done
 
 # Reset root
-echo "[+] Resetting root password" | tee -a $LOGFILE
+echo "[PRS] Resetting root password" | tee -a $LOGFILE
 echo "root:$NEW_PASS" | chpasswd
 
-echo "[*] All passwords reset. Details logged to $LOGFILE"
-echo "[! ] Secure this file:  chmod 600 $LOGFILE"
+echo "[PRS] All passwords reset. Details logged to $LOGFILE"
 chmod 600 $LOGFILE
 ```
 
@@ -113,17 +118,17 @@ chmod 600 $LOGFILE
 
 ## Wazuh Setup & Configuration
 
-### Wazuh Installation (Quick)
+### Wazuh Agent Installation (Quick)
 
 Remember, that for most up-to-date information refer to the official installation guide, found at:
 
 https://documentation.wazuh.com/current/installation-guide/index.html
 
+Code snippet covers installation of wazuh **agent** on linux. Or optionally follow the quick-setup in Wazuh dashboard (contains quick command snippets).
+
 ```bash
 #!/bin/bash
-# Wazuh Agent installation on Ubuntu/Debian
 
-# Install dependencies
 apt update
 apt install -y curl apt-transport-https lsb-release gnupg
 
@@ -144,15 +149,13 @@ systemctl daemon-reload
 systemctl enable wazuh-agent
 systemctl start wazuh-agent
 
-echo "[*] Wazuh agent installed and started"
-echo "[*] Check status: systemctl status wazuh-agent"
+echo "Wazuh agent installed and started"
+echo "Check status: systemctl status wazuh-agent"
 ```
 
 ### Custom Wazuh Rules
 
 ```xml name=local_rules.xml url=/var/ossec/etc/rules/local_rules.xml
-<!-- Custom rules for attack-defense CTF -->
-
 <!-- SSH Brute Force Detection -->
 <group name="syslog,sshd,">
   <rule id="100100" level="10">
@@ -183,6 +186,7 @@ echo "[*] Check status: systemctl status wazuh-agent"
 </group>
 
 <!-- Privilege Escalation Attempts -->
+<!-- Might result in quite a few false positives, maybe remove-->
 <group name="privilege_escalation,">
   <rule id="100400" level="12">
     <if_sid>5402</if_sid>
@@ -200,7 +204,7 @@ echo "[*] Check status: systemctl status wazuh-agent"
   </rule>
 </group>
 
-<!-- Suspicious Network Connections -->
+<!-- ALL Network Connections -->
 <group name="network,">
   <rule id="100600" level="12">
     <decoded_as>netstat</decoded_as>
@@ -217,18 +221,11 @@ echo "[*] Check status: systemctl status wazuh-agent"
     <description>Password cracking tool executed</description>
   </rule>
 </group>
-
-<!-- Scanning Detection -->
-<group name="recon,">
-  <rule id="100800" level="10">
-    <if_sid>530</if_sid>
-    <match>nmap|masscan|unicornscan|zmap</match>
-    <description>Network scanning tool detected</description>
-  </rule>
-</group>
 ```
 
 ### Wazuh Active Response Configuration
+
+To be used in conjunction with the `block-connection.sh` script in the following section.
 
 ```xml name=ossec. conf url=/var/ossec/etc/ossec.conf
 <!-- Add to ossec.conf -->
@@ -300,7 +297,6 @@ echo "[*] Check status: systemctl status wazuh-agent"
 
 ```bash name=block-connection.sh url=/var/ossec/active-response/bin/block-connection.sh
 #!/bin/bash
-# Block suspicious network connections
 # Location: /var/ossec/active-response/bin/block-connection.sh
 
 LOCAL=$(dirname $0)
@@ -334,83 +330,16 @@ fi
 exit 0
 ```
 
-```bash name=kill-process.sh url=/var/ossec/active-response/bin/kill-process.sh
-#!/bin/bash
-# Kill suspicious processes
-# Location: /var/ossec/active-response/bin/kill-process.sh
-
-ACTION=$1
-USER=$2
-IP=$3
-ALERTID=$4
-RULEID=$5
-
-LOG="/var/ossec/logs/active-responses.log"
-echo "`date` $0 $1 $2 $3 $4 $5" >> $LOG
-
-# List of suspicious process names
-SUSPICIOUS_PROCS=("nc" "ncat" "netcat" "socat" "python -c" "perl -e" "bash -i" "sh -i")
-
-if [ "x${ACTION}" = "xadd" ]; then
-    for proc in "${SUSPICIOUS_PROCS[@]}"; do
-        PIDS=$(pgrep -f "$proc")
-        if [ ! -z "$PIDS" ]; then
-            echo "`date` Killing suspicious process: $proc (PIDs: $PIDS)" >> $LOG
-            kill -9 $PIDS
-        fi
-    done
-fi
-
-exit 0
-```
-
-```bash name=backup-and-remove-webshell.sh url=/var/ossec/active-response/bin/backup-and-remove-webshell.sh
-#!/bin/bash
-# Backup and remove detected web shells
-# Location: /var/ossec/active-response/bin/backup-and-remove-webshell.sh
-
-ACTION=$1
-USER=$2
-IP=$3
-ALERTID=$4
-RULEID=$5
-FILENAME=$6
-
-LOG="/var/ossec/logs/active-responses. log"
-BACKUP_DIR="/var/ossec/quarantine"
-
-mkdir -p $BACKUP_DIR
-
-echo "`date` $0 $1 $2 $3 $4 $5 $6" >> $LOG
-
-if [ "x${ACTION}" = "xadd" ]; then
-    if [ -f "$FILENAME" ]; then
-        # Backup the file
-        BACKUP_NAME="${BACKUP_DIR}/$(basename ${FILENAME})_$(date +%s)"
-        cp "$FILENAME" "$BACKUP_NAME"
-        echo "`date` Backed up suspicious file: $FILENAME to $BACKUP_NAME" >> $LOG
-
-        # Remove the malicious file
-        rm -f "$FILENAME"
-        echo "`date` Removed malicious file: $FILENAME" >> $LOG
-    fi
-fi
-
-exit 0
-```
-
-**Make scripts executable:**
+Finally, ensure the active response scripts are executable.
 
 ```bash
 chmod 750 /var/ossec/active-response/bin/block-connection.sh
-chmod 750 /var/ossec/active-response/bin/kill-process.sh
-chmod 750 /var/ossec/active-response/bin/backup-and-remove-webshell.sh
 chown root:wazuh /var/ossec/active-response/bin/*. sh
 ```
 
 ---
 
-## Suricata IDS/IPS Setup
+## Suricata
 
 ### Suricata Installation
 
@@ -420,7 +349,6 @@ https://docs.suricata.io/en/latest/quickstart.html
 
 ```bash
 #!/bin/bash
-# Install Suricata IDS/IPS
 
 apt update
 apt install -y software-properties-common
@@ -435,9 +363,9 @@ suricata-update
 systemctl enable suricata
 systemctl start suricata
 
-echo "[*] Suricata installed"
-echo "[*] Config:  /etc/suricata/suricata.yaml"
-echo "[*] Rules: /var/lib/suricata/rules/"
+echo "Suricata installed"
+echo "Config:  /etc/suricata/suricata.yaml"
+echo "Rules: /var/lib/suricata/rules/"
 ```
 
 ### Custom Suricata Rules
@@ -516,9 +444,9 @@ alert http any any -> $HOME_NET any (msg:"RECON WinPEAS download detected"; flow
 
 ### Suricata Configuration
 
-```yaml name=suricata.yaml url=/etc/suricata/suricata.yaml
-# Key configurations for attack-defense
+Used as a reference guide for configuring Suricata post-installation. Keep in mind that suricata alerts may contain too many fields (as seen in class), so be sure that wazuh central is able to parse around 512 JSON fields.
 
+```yaml name=suricata.yaml url=/etc/suricata/suricata.yaml
 # Set network
 vars:
   address-groups:
@@ -554,10 +482,12 @@ outputs:
 default-rule-path: /var/lib/suricata/rules
 rule-files:
   - suricata.rules
-  - local.rules # Your custom rules
+  - local.rules
 ```
 
 ### Auto-Block IPs Script (Suricata + iptables) python
+
+A brute-force script that simply tails eve.json log and blocks IPs if an IP generates an arbitrary amount of alerts (such as 5) within 60 seconds.
 
 ```python name=suricata-autoblock.py
 #!/usr/bin/env python3
@@ -649,135 +579,19 @@ if __name__ == '__main__':
         print(f"[*] Total blocked IPs: {len(BLOCKED_IPS)}")
 ```
 
-### Auto-block IPS (just iptables, if suricata not present)
-
-```bash name=suricata-autoblock.sh
-#!/bin/bash
-# Simple bash-based auto-blocking using iptables
-# Monitors auth.log for SSH attacks
-
-LOGFILE="/var/log/auth.log"
-BLOCKED_LOG="/var/log/blocked_ips.log"
-THRESHOLD=5
-TIME_WINDOW=120  # seconds
-
-# Check if running as root
-if [ "$EUID" -ne 0 ]; then
-    echo "[!] Please run as root"
-    exit 1
-fi
-
-echo "[*] Starting iptables auto-block monitor"
-echo "[*] Threshold: $THRESHOLD failed attempts in $TIME_WINDOW seconds"
-echo "[*] Monitoring:  $LOGFILE"
-echo "[*] Press Ctrl+C to stop"
-echo ""
-
-# Create temporary file for tracking
-TEMP_DIR="/tmp/iptables-autoblock"
-mkdir -p "$TEMP_DIR"
-
-# Function to block IP
-block_ip() {
-    local IP=$1
-    local REASON=$2
-
-    # Check if already blocked
-    iptables -C INPUT -s "$IP" -j DROP 2>/dev/null
-    if [ $? -ne 0 ]; then
-        # Not blocked yet, block it
-        iptables -I INPUT -s "$IP" -j DROP
-        iptables -I OUTPUT -d "$IP" -j DROP
-
-        echo -e "\033[91m[$(date '+%Y-%m-%d %H:%M:%S')] BLOCKED: $IP - $REASON\033[0m"
-        echo "$(date '+%Y-%m-%d %H:%M:%S') - Blocked:  $IP - $REASON" >> "$BLOCKED_LOG"
-
-        # Kill existing connections
-        ss -K src "$IP" 2>/dev/null
-    fi
-}
-
-# Function to check threshold
-check_threshold() {
-    local IP=$1
-    local TRACK_FILE="$TEMP_DIR/${IP//\. /_}"
-
-    # Add current timestamp
-    echo "$(date +%s)" >> "$TRACK_FILE"
-
-    # Remove old entries outside time window
-    CUTOFF=$(($(date +%s) - TIME_WINDOW))
-    grep -v "^[0-9]*$" "$TRACK_FILE" 2>/dev/null > "${TRACK_FILE}.tmp" || touch "${TRACK_FILE}.tmp"
-    awk -v cutoff="$CUTOFF" '$1 > cutoff' "$TRACK_FILE" >> "${TRACK_FILE}.tmp"
-    mv "${TRACK_FILE}.tmp" "$TRACK_FILE"
-
-    # Count events
-    COUNT=$(wc -l < "$TRACK_FILE")
-
-    if [ "$COUNT" -ge "$THRESHOLD" ]; then
-        block_ip "$IP" "Exceeded threshold ($COUNT events)"
-        rm -f "$TRACK_FILE"  # Reset counter
-    fi
-}
-
-# Clean up on exit
-cleanup() {
-    echo ""
-    echo "[*] Stopping auto-block monitor"
-    echo "[*] Blocked IPs logged to: $BLOCKED_LOG"
-    rm -rf "$TEMP_DIR"
-    exit 0
-}
-
-trap cleanup SIGINT SIGTERM
-
-# Monitor auth.log in real-time
-tail -F "$LOGFILE" 2>/dev/null | while read -r line; do
-    # Check for failed password attempts
-    if echo "$line" | grep -q "Failed password"; then
-        IP=$(echo "$line" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -1)
-        if [ ! -z "$IP" ] && [[ !  "$IP" =~ ^(192\.168\.|10\.|127\.) ]]; then
-            echo -e "\033[93m[$(date '+%Y-%m-%d %H:%M:%S')] Failed password from:  $IP\033[0m"
-            check_threshold "$IP"
-        fi
-    fi
-
-    # Check for invalid user
-    if echo "$line" | grep -q "Invalid user"; then
-        IP=$(echo "$line" | grep -oE '([0-9]{1,3}\. ){3}[0-9]{1,3}' | head -1)
-        if [ ! -z "$IP" ] && [[ ! "$IP" =~ ^(192\.168\.|10\.|127\.) ]]; then
-            echo -e "\033[93m[$(date '+%Y-%m-%d %H:%M:%S')] Invalid user from: $IP\033[0m"
-            check_threshold "$IP"
-        fi
-    fi
-
-    # Check for break-in attempts
-    if echo "$line" | grep -q "POSSIBLE BREAK-IN ATTEMPT"; then
-        IP=$(echo "$line" | grep -oE '([0-9]{1,3}\. ){3}[0-9]{1,3}' | head -1)
-        if [ ! -z "$IP" ] && [[ ! "$IP" =~ ^(192\.168\.|10\.|127\.) ]]; then
-            echo -e "\033[91m[$(date '+%Y-%m-%d %H:%M:%S')] BREAK-IN ATTEMPT from: $IP\033[0m"
-            # Immediate block for break-in attempts
-            block_ip "$IP" "Break-in attempt detected"
-        fi
-    fi
-done
-```
-
 **Run the script:**
 
 ```bash
 chmod +x suricata-autoblock.py
-# -- or --
-chmod +x suricata-autoblock.sh
 # Run in background
 nohup python3 suricata-autoblock.py &
-# -- or --
-nohup suricata-autoblock.sh
 ```
 
 ---
 
 ## Atomic Red Team (ART) Testing
+
+While not useful directly in the case of an attack - its good for testing whether custom rules and scripts above (automatic ip block, lockdown, etc.) provide adequate measures for simulated attacks.
 
 ### ART Installation
 
@@ -788,8 +602,20 @@ Install-AtomicRedTeam -getAtomics
 ```
 
 ```bash
-# Linux - Install Atomic Red Team
-git clone https://github.com/redcanaryco/atomic-red-team.git /opt/atomic-red-team
+# Ubuntu/Debian NEEDS POWERSHELL
+wget https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/packages-microsoft-prod. deb
+sudo dpkg -i packages-microsoft-prod.deb
+sudo apt update
+sudo apt install -y powershell
+
+# Verify installation
+pwsh --version
+
+# Install Atomic Red Team
+sudo pwsh -Command "IEX (IWR 'https://raw.githubusercontent.com/redcanaryco/invoke-atomicredteam/master/install-atomicredteam.ps1' -UseBasicParsing); Install-AtomicRedTeam -getAtomics -Force"
+
+# Install Invoke-AtomicRedTeam module
+sudo pwsh -Command "Install-Module -Name invoke-atomicredteam -Scope AllUsers -Force"
 ```
 
 ### Running ART Tests
@@ -822,144 +648,94 @@ uname -a
 cat /etc/issue
 ```
 
-### Validation Script
-
-```bash name=test-detection.sh
-#!/bin/bash
-# Test blue team detection capabilities
-
-echo "[*] Testing Blue Team Detection Capabilities"
-echo "[*] Check Wazuh/Suricata for alerts"
-echo ""
-
-# Test 1: Network scanning detection
-echo "[TEST 1] Network scanning simulation"
-ping -c 5 127.0.0.1
-sleep 2
-
-# Test 2: SSH brute force simulation
-echo "[TEST 2] Failed SSH authentication (safe)"
-for i in {1..5}; do
-    ssh invalid@localhost 2>/dev/null
-    sleep 1
-done
-
-# Test 3: Suspicious command execution
-echo "[TEST 3] Suspicious command patterns"
-echo "id" | bash
-echo "whoami" | bash
-sleep 2
-
-# Test 4: File integrity test
-echo "[TEST 4] Modify monitored file"
-touch /tmp/test_file_$(date +%s)
-sleep 2
-
-# Test 5: Suspicious network connection attempt
-echo "[TEST 5] Network connection test"
-timeout 2 nc -zv 8.8.8.8 4444 2>/dev/null || true
-sleep 2
-
-echo ""
-echo "[*] Tests complete - Check logs:"
-echo "    Wazuh: /var/ossec/logs/alerts/alerts.log"
-echo "    Suricata: /var/log/suricata/fast.log"
-```
-
----
-
 ## Incident Response Scripts
 
 ### Emergency Response Script
 
 ```bash name=emergency-response.sh
 #!/bin/bash
-# Emergency incident response - Run when attack detected
+# Emergency incident response - when all else fails and panic
 
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 INCIDENT_DIR="/root/incident_$TIMESTAMP"
 
-echo "[! ] INCIDENT RESPONSE INITIATED:  $TIMESTAMP"
+echo "[ER] INCIDENT RESPONSE INITIATED:  $TIMESTAMP"
 
 # Create incident directory
 mkdir -p "$INCIDENT_DIR"
 
 # Network snapshot
-echo "[+] Capturing network state..."
+echo "[ER] Capturing network state..."
 netstat -antup > "$INCIDENT_DIR/netstat.txt"
 ss -tulpn > "$INCIDENT_DIR/ss. txt"
 iptables -L -n -v > "$INCIDENT_DIR/iptables.txt"
 arp -a > "$INCIDENT_DIR/arp.txt"
 
 # Process snapshot
-echo "[+] Capturing running processes..."
+echo "[ER] Capturing running processes..."
 ps auxf > "$INCIDENT_DIR/processes.txt"
 lsof > "$INCIDENT_DIR/lsof.txt"
 pstree -p > "$INCIDENT_DIR/pstree.txt"
 
 # User activity
-echo "[+] Capturing user activity..."
+echo "[ER] Capturing user activity..."
 w > "$INCIDENT_DIR/who.txt"
 last -100 > "$INCIDENT_DIR/last.txt"
 lastlog > "$INCIDENT_DIR/lastlog.txt"
 
 # File system changes
-echo "[+] Checking for recent file changes..."
+echo "[ER] Checking for recent file changes..."
 find / -type f -mmin -30 2>/dev/null > "$INCIDENT_DIR/recent_files.txt"
 find /tmp -type f -mmin -60 2>/dev/null > "$INCIDENT_DIR/tmp_files.txt"
 find /var/www -type f -mmin -60 2>/dev/null > "$INCIDENT_DIR/www_files.txt"
 
 # Check for webshells
-echo "[+] Scanning for web shells..."
+echo "[ER] Scanning for web shells..."
 grep -r "system(" /var/www/ 2>/dev/null > "$INCIDENT_DIR/webshell_scan.txt"
 grep -r "eval(" /var/www/ 2>/dev/null >> "$INCIDENT_DIR/webshell_scan.txt"
 grep -r "base64_decode" /var/www/ 2>/dev/null >> "$INCIDENT_DIR/webshell_scan.txt"
 
 # Check for suspicious cron jobs
-echo "[+] Checking scheduled tasks..."
+echo "[ER] Checking scheduled tasks..."
 crontab -l > "$INCIDENT_DIR/crontab_user.txt" 2>/dev/null
 cat /etc/crontab > "$INCIDENT_DIR/crontab_system.txt" 2>/dev/null
 
 # Check for SUID/SGID changes
-echo "[+] Checking SUID/SGID files..."
+echo "[ER] Checking SUID/SGID files..."
 find / -perm -4000 -o -perm -2000 2>/dev/null > "$INCIDENT_DIR/suid_files.txt"
 
 # Memory dump (if enough space)
-echo "[+] Creating memory dump..."
+echo "[ER] Creating memory dump..."
 cat /proc/kcore > "$INCIDENT_DIR/memory_dump" 2>/dev/null || echo "Memory dump failed"
 
 # Copy logs
-echo "[+] Copying logs..."
+echo "[ER] Copying logs..."
 cp -r /var/log "$INCIDENT_DIR/logs/"
 cp /var/ossec/logs/alerts/alerts. log "$INCIDENT_DIR/" 2>/dev/null
 cp /var/log/suricata/fast.log "$INCIDENT_DIR/" 2>/dev/null
 
 # Network capture (30 seconds)
-echo "[+] Starting packet capture (30 seconds)..."
+echo "[ER] Starting packet capture (30 seconds)..."
 timeout 30 tcpdump -i any -w "$INCIDENT_DIR/capture.pcap" 2>/dev/null &
 
 echo ""
-echo "[*] Incident data collected in:  $INCIDENT_DIR"
-echo "[*] Next steps:"
-echo "    1. Review collected data"
-echo "    2. Identify attack vector"
-echo "    3. Execute containment measures"
-echo "    4. Run cleanup script"
+echo "[ER] Incident data collected in:  $INCIDENT_DIR"
 ```
 
 ### Kill Suspicious Connections
 
+Can run in background or be executed from time to time. Ofcourse update suspicious ports array (for example, 8080 might not be suspicious in CTF).
+
 ```bash name=kill-connections.sh
 #!/bin/bash
-# Kill all suspicious network connections
 
-echo "[! ] Killing suspicious network connections..."
+echo "[KSC] Killing suspicious network connections..."
 
 # Kill connections to common C2 ports
 SUSPICIOUS_PORTS="4444 4445 1234 31337 8080 8888"
 
 for port in $SUSPICIOUS_PORTS; do
-    echo "[+] Killing connections to port $port..."
+    echo "[KSC] Killing connections to port $port..."
     ss -K dst : $port 2>/dev/null
 done
 
@@ -967,40 +743,40 @@ done
 SUSPICIOUS_IPS="1.2.3.4 5.6.7.8"
 
 for ip in $SUSPICIOUS_IPS; do
-    echo "[+] Killing connections from $ip..."
+    echo "[KSC] Killing connections from $ip..."
     ss -K src $ip 2>/dev/null
 done
 
 # Block the IPs
 for ip in $SUSPICIOUS_IPS; do
-    echo "[+] Blocking $ip with iptables..."
+    echo "[KSC] Blocking $ip with iptables..."
     iptables -I INPUT -s $ip -j DROP
     iptables -I OUTPUT -d $ip -j DROP
 done
 
-echo "[*] Suspicious connections terminated"
-echo "[*] Review:  netstat -antup"
+echo "[KSC] Suspicious connections terminated"
+echo "[KSC] Review:  netstat -antup"
 ```
 
 ### Find and Remove Backdoors
 
+Run once (or periodically, but not in background) to try and clean system from backdoors. **THIS ONLY IDENTIFIES BACKDOORS**, manual review and action is needed (as for example wiping all cronjob may negatively impact existing response mechanisms).
+
 ```bash name=remove-backdoors.sh
 #!/bin/bash
-# Search and remove common backdoor mechanisms
 
 REPORT="/root/backdoor_removal_report_$(date +%s).txt"
 
-echo "[*] Searching for backdoors..." | tee -a $REPORT
+echo "[RB] Searching for backdoors..." | tee -a $REPORT
 
 # Check for unauthorized SSH keys
 echo "" >> $REPORT
-echo "[+] Checking SSH authorized_keys..." | tee -a $REPORT
+echo "[RB] Checking SSH authorized_keys..." | tee -a $REPORT
 find /home -name "authorized_keys" -exec ls -la {} \; >> $REPORT 2>&1
 find /root -name "authorized_keys" -exec ls -la {} \; >> $REPORT 2>&1
 
-# Check for suspicious cron jobs
 echo "" >> $REPORT
-echo "[+] Checking cron jobs..." | tee -a $REPORT
+echo "[RB] Checking cron jobs..." | tee -a $REPORT
 cat /etc/crontab >> $REPORT
 ls -la /etc/cron. * >> $REPORT
 crontab -l >> $REPORT 2>&1
@@ -1010,40 +786,40 @@ crontab -l >> $REPORT 2>&1
 
 # Check for web shells
 echo "" >> $REPORT
-echo "[+] Scanning for web shells..." | tee -a $REPORT
+echo "[RB] Scanning for web shells..." | tee -a $REPORT
 find /var/www -type f -name "*.php" -exec grep -l "eval(" {} \; >> $REPORT 2>&1
 find /var/www -type f -name "*.php" -exec grep -l "system(" {} \; >> $REPORT 2>&1
 find /var/www -type f -name "*.php" -exec grep -l "base64_decode" {} \; >> $REPORT 2>&1
 
 # Check for SUID backdoors
 echo "" >> $REPORT
-echo "[+] Checking for suspicious SUID files..." | tee -a $REPORT
+echo "[RB] Checking for suspicious SUID files..." | tee -a $REPORT
 find / -perm -4000 -type f 2>/dev/null | grep -v -E "bin/(su|sudo|passwd|mount)" >> $REPORT
 
 # Check systemd services
 echo "" >> $REPORT
-echo "[+] Checking systemd services..." | tee -a $REPORT
+echo "[RB] Checking systemd services..." | tee -a $REPORT
 systemctl list-units --type=service --state=running >> $REPORT
 
 # Check for hidden files in tmp
 echo "" >> $REPORT
-echo "[+] Checking /tmp for hidden files..." | tee -a $REPORT
+echo "[RB] Checking /tmp for hidden files..." | tee -a $REPORT
 ls -laR /tmp >> $REPORT 2>&1
 ls -laR /var/tmp >> $REPORT 2>&1
 
 # Check for unusual listening ports
 echo "" >> $REPORT
-echo "[+] Checking listening ports..." | tee -a $REPORT
+echo "[RB] Checking listening ports..." | tee -a $REPORT
 netstat -tlpn >> $REPORT 2>&1
 
 # Check bash history for evidence
 echo "" >> $REPORT
-echo "[+] Checking bash history..." | tee -a $REPORT
+echo "[RB] Checking bash history..." | tee -a $REPORT
 cat /root/.bash_history >> $REPORT 2>&1
 
 echo ""
-echo "[*] Backdoor scan complete. Report:  $REPORT"
-echo "[! ] Review report and manually remove identified backdoors"
+echo "[RB] Backdoor scan complete. Report:  $REPORT"
+echo "[RB] Review report and manually remove identified backdoors"
 ```
 
 ## REMEMBER!!!
